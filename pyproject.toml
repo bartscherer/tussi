@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Thomas Bartscherer", email = "thomas@bartscherer.net" }]
+authors = [{ name = "Thomas Bartscherer", email = "thomas@bartscherer.io" }]
 keywords = ["tus", "upload", "resumable", "asgi", "async", "filesystem"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
