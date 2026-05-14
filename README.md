@@ -2,9 +2,13 @@
 
 A [TUS 1.0.0](https://tus.io/protocols/resumable-upload) resumable upload server for Python. ASGI-native, filesystem storage, no framework lock-in.
 
+File uploads break and are a chore to implement. tussi handles the resume. Clients pick up exactly where they left off. Drop it into any ASGI app, point a TUS client at it, done.
+
 **Linux only**. Tussi uses `posix_fallocate` for pre-allocation and `fcntl.flock` for safe worker coordination.
 
 ## Install
+
+[![PyPI](https://img.shields.io/pypi/v/tussi)](https://pypi.org/project/tussi/)
 
 ```bash
 pip install tussi
