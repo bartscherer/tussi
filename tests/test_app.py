@@ -297,13 +297,13 @@ class TestWaitForFile:
             metadata={'filename': 'hello.txt'},
         )
         async with _app.wait_for_file(timeout=5) as upload:
-            assert upload.info.metadata.get('filename') == 'hello.txt'
+            assert upload.record.metadata.get('filename') == 'hello.txt'
 
     async def test_finished_at_and_duration_set(self, _app, _client):
         await _complete_upload(_client, b'x' * 64)
         async with _app.wait_for_file(timeout=5) as upload:
-            assert upload.info.finished_at is not None
-            assert isinstance(upload.info.duration, timedelta)
+            assert upload.record.finished_at is not None
+            assert isinstance(upload.record.duration, timedelta)
 
     async def test_timeout_when_no_uploads(self, _app):
         with pytest.raises(TimeoutError):
