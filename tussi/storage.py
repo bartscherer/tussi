@@ -227,23 +227,23 @@ class FilesystemStorage(Storage):
     def _meta_path(self, upload_id: str) -> Path:
         return self._dir / f'{upload_id}.meta'
 
-    def _write_record(self, meta_path: Path, record: UploadRecord) -> None:
+    def _write_record(self, dest: Path, record: UploadRecord) -> None:
         tmp_meta: Path | None = None
         try:
             with NamedTemporaryFile(
                 mode='w',
-                dir=meta_path.parent,
+                dir=dest.parent,
                 suffix='.meta',
                 delete=False,
             ) as tf:
                 tmp_meta = Path(tf.name)
                 tf.write(record.model_dump_json())
-            tmp_meta.rename(meta_path)
+            tmp_meta.rename(dest)
         except Exception as exc:
             if tmp_meta is not None:
                 tmp_meta.unlink(missing_ok=True)
             raise StorageException(
-                f'Failed to update meta in "{meta_path}"'
+                f'Failed to write record to "{dest}"'
             ) from exc
 
     async def free_space(self) -> int:
