@@ -226,6 +226,25 @@ class FilesystemStorage(Storage):
     def _meta_path(self, upload_id: str) -> Path:
         return self._dir / f'{upload_id}.meta'
 
+    def _write_record(self, meta_path: Path, meta: UploadMeta) -> None:
+        tmp_meta: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                mode='w',
+                dir=meta_path.parent,
+                suffix='.meta',
+                delete=False,
+            ) as tf:
+                tmp_meta = Path(tf.name)
+                tf.write(meta.model_dump_json())
+            tmp_meta.rename(meta_path)
+        except Exception as exc:
+            if tmp_meta is not None:
+                tmp_meta.unlink(missing_ok=True)
+            raise StorageException(
+                f'Failed to update meta in "{meta_path}"'
+            ) from exc
+
     async def free_space(self) -> int:
         try:
             return await to_thread.run_sync(
@@ -287,7 +306,7 @@ class FilesystemStorage(Storage):
                                 f'Failed to allocate {length} bytes for '
                                 f'upload "{upload_id}"'
                             ) from exc
-                    meta_path.write_text(meta.model_dump_json())
+                    self._write_record(meta_path, meta)
                 except StorageException:
                     try:
                         upload_path.unlink(missing_ok=True)
@@ -391,23 +410,7 @@ class FilesystemStorage(Storage):
                 new_offset = expected_offset + len(data)
                 meta.offset = new_offset
                 meta.last_write = time()
-                tmp_meta: Path | None = None
-                try:
-                    with NamedTemporaryFile(
-                        mode='w',
-                        dir=meta_path.parent,
-                        suffix='.meta',
-                        delete=False,
-                    ) as tf:
-                        tmp_meta = Path(tf.name)
-                        tf.write(meta.model_dump_json())
-                    tmp_meta.rename(meta_path)
-                except Exception as exc:
-                    if tmp_meta is not None:
-                        tmp_meta.unlink(missing_ok=True)
-                    raise StorageException(
-                        f'Failed to update meta in "{meta_path}"'
-                    ) from exc
+                self._write_record(meta_path, meta)
                 return UploadInfo(
                     upload_id=upload_id,
                     length=meta.length,
