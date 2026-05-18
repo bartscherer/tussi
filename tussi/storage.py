@@ -33,7 +33,7 @@ from anyio import to_thread
 
 from tussi.models import (
     UploadInfo,
-    UploadMeta
+    UploadRecord
 )
 
 
@@ -226,7 +226,7 @@ class FilesystemStorage(Storage):
     def _meta_path(self, upload_id: str) -> Path:
         return self._dir / f'{upload_id}.meta'
 
-    def _write_record(self, meta_path: Path, meta: UploadMeta) -> None:
+    def _write_record(self, meta_path: Path, record: UploadRecord) -> None:
         tmp_meta: Path | None = None
         try:
             with NamedTemporaryFile(
@@ -236,7 +236,7 @@ class FilesystemStorage(Storage):
                 delete=False,
             ) as tf:
                 tmp_meta = Path(tf.name)
-                tf.write(meta.model_dump_json())
+                tf.write(record.model_dump_json())
             tmp_meta.rename(meta_path)
         except Exception as exc:
             if tmp_meta is not None:
@@ -270,7 +270,7 @@ class FilesystemStorage(Storage):
                 f'metadata={metadata}]'
             )
         now = time()
-        meta = UploadMeta(
+        record = UploadRecord(
             length=length,
             metadata=metadata,
             last_write=now,
@@ -306,7 +306,7 @@ class FilesystemStorage(Storage):
                                 f'Failed to allocate {length} bytes for '
                                 f'upload "{upload_id}"'
                             ) from exc
-                    self._write_record(meta_path, meta)
+                    self._write_record(meta_path, record)
                 except StorageException:
                     try:
                         upload_path.unlink(missing_ok=True)
@@ -372,7 +372,7 @@ class FilesystemStorage(Storage):
                         f'upload "{upload_id}"'
                     )
                 try:
-                    meta = UploadMeta.model_validate_json(
+                    record = UploadRecord.model_validate_json(
                         meta_path.read_text()
                     )
                 except StorageException:
@@ -381,16 +381,16 @@ class FilesystemStorage(Storage):
                     raise StorageException(
                         f'Failed to read meta file "{meta_path}"'
                     ) from exc
-                if expected_offset != meta.offset:
-                    raise OffsetMismatchException(meta.offset)
+                if expected_offset != record.offset:
+                    raise OffsetMismatchException(record.offset)
                 if (
-                    meta.length is not None and
-                    expected_offset + len(data) > meta.length
+                    record.length is not None and
+                    expected_offset + len(data) > record.length
                 ):
                     raise UploadSizeExceededException(
                         f'Write of {len(data)} bytes at offset '
                         f'{expected_offset} would exceed declared '
-                        f'upload length {meta.length}'
+                        f'upload length {record.length}'
                     )
                 f.seek(expected_offset)
                 try:
@@ -408,16 +408,16 @@ class FilesystemStorage(Storage):
                         f'Failed to write data to "{upload_path}"'
                     ) from exc
                 new_offset = expected_offset + len(data)
-                meta.offset = new_offset
-                meta.last_write = time()
-                self._write_record(meta_path, meta)
+                record.offset = new_offset
+                record.last_write = time()
+                self._write_record(meta_path, record)
                 return UploadInfo(
                     upload_id=upload_id,
-                    length=meta.length,
+                    length=record.length,
                     offset=new_offset,
-                    metadata=meta.metadata,
-                    last_write=meta.last_write,
-                    created_at=meta.created_at,
+                    metadata=record.metadata,
+                    last_write=record.last_write,
+                    created_at=record.created_at,
                 )
 
         try:
@@ -442,19 +442,19 @@ class FilesystemStorage(Storage):
                         f'Failed to read contents of meta file "{meta_path}"'
                     ) from exc
                 try:
-                    meta = UploadMeta.model_validate_json(raw)
+                    record = UploadRecord.model_validate_json(raw)
                 except Exception as exc:
                     raise StorageException(
                         f'Failed to validate contents of meta file '
-                        f'"{meta_path}" against the UploadMeta model'
+                        f'"{meta_path}" against the UploadRecord model'
                     ) from exc
                 return UploadInfo(
                     upload_id=upload_id,
-                    length=meta.length,
-                    offset=meta.offset,
-                    metadata=meta.metadata,
-                    last_write=meta.last_write,
-                    created_at=meta.created_at,
+                    length=record.length,
+                    offset=record.offset,
+                    metadata=record.metadata,
+                    last_write=record.last_write,
+                    created_at=record.created_at,
                 )
 
         try:
@@ -555,7 +555,7 @@ class FilesystemStorage(Storage):
                 try:
                     with self._lock(upload_id):
                         try:
-                            meta = UploadMeta.model_validate_json(
+                            record = UploadRecord.model_validate_json(
                                 meta_path.read_text()
                             )
                         except Exception as exc:
@@ -564,11 +564,11 @@ class FilesystemStorage(Storage):
                             ) from exc
                         results.append(UploadInfo(
                             upload_id=upload_id,
-                            length=meta.length,
-                            offset=meta.offset,
-                            metadata=meta.metadata,
-                            last_write=meta.last_write,
-                            created_at=meta.created_at,
+                            length=record.length,
+                            offset=record.offset,
+                            metadata=record.metadata,
+                            last_write=record.last_write,
+                            created_at=record.created_at,
                         ))
                 except UploadNotFoundException:
                     continue

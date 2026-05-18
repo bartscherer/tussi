@@ -4,7 +4,7 @@ from shutil import move
 from pydantic import BaseModel
 
 
-class UploadMeta(BaseModel):
+class UploadRecord(BaseModel):
     '''
         Persisted to .meta file alongside the upload
     '''
@@ -37,10 +37,10 @@ class CompletedUpload:
         once.
     '''
 
-    def __init__(self, path: Path, meta: dict[str, str]) -> None:
+    def __init__(self, path: Path, record: UploadRecord) -> None:
         self._path = path
         self._meta_path = path.parent / f'{path.name}.meta'
-        self.meta = meta
+        self.info = record
         self.name = path.name
         self._file_moved = False
         self._meta_moved = False

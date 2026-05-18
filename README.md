@@ -75,7 +75,7 @@ call from multiple concurrent workers, because each worker claims exactly one fi
 ```python
 # tus = TUSApp(...) - from "Quick start" above
 async with tus.wait_for_file(timeout=3600) as upload:
-    filename = upload.meta.get('filename', upload.name)
+    filename = upload.info.metadata.get('filename', upload.name)
     upload.save(Path('./dest') / filename)
     upload.save_meta(Path('./dest') / f'{filename}.meta')
 ```
@@ -86,7 +86,7 @@ Raises `TimeoutError` if no upload is available within `timeout` seconds.
 
 Clients pass metadata via the `Upload-Metadata` header as a comma-separated list of
 `key base64(value)` pairs per the TUS spec. Tussi decodes this into a `dict[str, str]`
-available as `upload.meta` inside `wait_for_file`.
+available as `upload.info.metadata` inside `wait_for_file`.
 
 Constraints:
 

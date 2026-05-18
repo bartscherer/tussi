@@ -45,7 +45,7 @@ from tussi.events import (
 from tussi.models import (
     CompletedUpload,
     UploadInfo,
-    UploadMeta,
+    UploadRecord,
 )
 from tussi.storage import (
     InsufficientStorageException,
@@ -637,7 +637,7 @@ class TUSApp:
         '''
         deadline = current_time() + timeout
 
-        def _try_claim() -> tuple[Path, BinaryIO, dict[str, str]] | None:
+        def _try_claim() -> tuple[Path, BinaryIO, UploadRecord] | None:
             try:
                 entries = list(self._completed_dir.iterdir())
             except OSError as exc:
@@ -660,9 +660,9 @@ class TUSApp:
                     continue
                 meta_path = candidate.parent / f'{candidate.name}.meta'
                 try:
-                    meta = UploadMeta.model_validate_json(
+                    record = UploadRecord.model_validate_json(
                         meta_path.read_text()
-                    ).metadata
+                    )
                 except Exception as exc:  # noqa: E501 # pylint: disable=broad-exception-caught
                     _log.error(
                         'discarding corrupt upload [path=%s]: %s',
@@ -673,7 +673,7 @@ class TUSApp:
                     flock(f, LOCK_UN)
                     f.close()
                     continue
-                return candidate, f, meta
+                return candidate, f, record
             return None
 
         claimed = None
@@ -687,10 +687,10 @@ class TUSApp:
                     )
                 await sleep(min(poll_interval, remaining))
 
-        dest, fh, meta = claimed
+        dest, fh, record = claimed
         meta_path = dest.parent / f'{dest.name}.meta'
         try:
-            yield CompletedUpload(path=dest, meta=meta)
+            yield CompletedUpload(path=dest, record=record)
         finally:
             def _release() -> None:
                 dest.unlink(missing_ok=True)
