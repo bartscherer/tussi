@@ -3,6 +3,7 @@ from abc import (
     abstractmethod
 )
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from tempfile import NamedTemporaryFile
 from fcntl import (
     flock,
@@ -33,7 +34,7 @@ from anyio import to_thread
 
 from tussi.models import (
     UploadInfo,
-    UploadMeta
+    UploadRecord
 )
 
 
@@ -226,6 +227,25 @@ class FilesystemStorage(Storage):
     def _meta_path(self, upload_id: str) -> Path:
         return self._dir / f'{upload_id}.meta'
 
+    def _write_record(self, dest: Path, record: UploadRecord) -> None:
+        tmp_meta: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                mode='w',
+                dir=dest.parent,
+                suffix='.meta',
+                delete=False,
+            ) as tf:
+                tmp_meta = Path(tf.name)
+                tf.write(record.model_dump_json())
+            tmp_meta.rename(dest)
+        except Exception as exc:
+            if tmp_meta is not None:
+                tmp_meta.unlink(missing_ok=True)
+            raise StorageException(
+                f'Failed to write record to "{dest}"'
+            ) from exc
+
     async def free_space(self) -> int:
         try:
             return await to_thread.run_sync(
@@ -251,7 +271,7 @@ class FilesystemStorage(Storage):
                 f'metadata={metadata}]'
             )
         now = time()
-        meta = UploadMeta(
+        record = UploadRecord(
             length=length,
             metadata=metadata,
             last_write=now,
@@ -287,7 +307,7 @@ class FilesystemStorage(Storage):
                                 f'Failed to allocate {length} bytes for '
                                 f'upload "{upload_id}"'
                             ) from exc
-                    meta_path.write_text(meta.model_dump_json())
+                    self._write_record(meta_path, record)
                 except StorageException:
                     try:
                         upload_path.unlink(missing_ok=True)
@@ -353,7 +373,7 @@ class FilesystemStorage(Storage):
                         f'upload "{upload_id}"'
                     )
                 try:
-                    meta = UploadMeta.model_validate_json(
+                    record = UploadRecord.model_validate_json(
                         meta_path.read_text()
                     )
                 except StorageException:
@@ -362,16 +382,16 @@ class FilesystemStorage(Storage):
                     raise StorageException(
                         f'Failed to read meta file "{meta_path}"'
                     ) from exc
-                if expected_offset != meta.offset:
-                    raise OffsetMismatchException(meta.offset)
+                if expected_offset != record.offset:
+                    raise OffsetMismatchException(record.offset)
                 if (
-                    meta.length is not None and
-                    expected_offset + len(data) > meta.length
+                    record.length is not None and
+                    expected_offset + len(data) > record.length
                 ):
                     raise UploadSizeExceededException(
                         f'Write of {len(data)} bytes at offset '
                         f'{expected_offset} would exceed declared '
-                        f'upload length {meta.length}'
+                        f'upload length {record.length}'
                     )
                 f.seek(expected_offset)
                 try:
@@ -389,32 +409,16 @@ class FilesystemStorage(Storage):
                         f'Failed to write data to "{upload_path}"'
                     ) from exc
                 new_offset = expected_offset + len(data)
-                meta.offset = new_offset
-                meta.last_write = time()
-                tmp_meta: Path | None = None
-                try:
-                    with NamedTemporaryFile(
-                        mode='w',
-                        dir=meta_path.parent,
-                        suffix='.meta',
-                        delete=False,
-                    ) as tf:
-                        tmp_meta = Path(tf.name)
-                        tf.write(meta.model_dump_json())
-                    tmp_meta.rename(meta_path)
-                except Exception as exc:
-                    if tmp_meta is not None:
-                        tmp_meta.unlink(missing_ok=True)
-                    raise StorageException(
-                        f'Failed to update meta in "{meta_path}"'
-                    ) from exc
+                record.offset = new_offset
+                record.last_write = time()
+                self._write_record(meta_path, record)
                 return UploadInfo(
                     upload_id=upload_id,
-                    length=meta.length,
+                    length=record.length,
                     offset=new_offset,
-                    metadata=meta.metadata,
-                    last_write=meta.last_write,
-                    created_at=meta.created_at,
+                    metadata=record.metadata,
+                    last_write=record.last_write,
+                    created_at=record.created_at,
                 )
 
         try:
@@ -439,19 +443,19 @@ class FilesystemStorage(Storage):
                         f'Failed to read contents of meta file "{meta_path}"'
                     ) from exc
                 try:
-                    meta = UploadMeta.model_validate_json(raw)
+                    record = UploadRecord.model_validate_json(raw)
                 except Exception as exc:
                     raise StorageException(
                         f'Failed to validate contents of meta file '
-                        f'"{meta_path}" against the UploadMeta model'
+                        f'"{meta_path}" against the UploadRecord model'
                     ) from exc
                 return UploadInfo(
                     upload_id=upload_id,
-                    length=meta.length,
-                    offset=meta.offset,
-                    metadata=meta.metadata,
-                    last_write=meta.last_write,
-                    created_at=meta.created_at,
+                    length=record.length,
+                    offset=record.offset,
+                    metadata=record.metadata,
+                    last_write=record.last_write,
+                    created_at=record.created_at,
                 )
 
         try:
@@ -500,23 +504,19 @@ class FilesystemStorage(Storage):
 
         def _do_finalize() -> None:
             with self._lock(upload_id, exclusive=True):
-                tmp_meta: Path | None = None
                 try:
-                    with NamedTemporaryFile(
-                        mode='w',
-                        dir=dest.parent,
-                        suffix='.meta',
-                        delete=False,
-                    ) as tf:
-                        tmp_meta = Path(tf.name)
-                        tf.write(meta_path.read_text())
-                    tmp_meta.rename(dest_meta)
+                    record = UploadRecord.model_validate_json(
+                        meta_path.read_text()
+                    )
                 except Exception as exc:
-                    if tmp_meta is not None:
-                        tmp_meta.unlink(missing_ok=True)
                     raise StorageException(
-                        f'Failed to copy meta file to "{dest_meta}"'
+                        f'Failed to read meta file "{meta_path}"'
                     ) from exc
+                record.finished_at = datetime.now(timezone.utc)
+                record.duration = record.finished_at - datetime.fromtimestamp(
+                    record.created_at, tz=timezone.utc
+                )
+                self._write_record(dest_meta, record)
                 try:
                     upload_path.rename(dest)
                 except Exception as exc:
@@ -552,7 +552,7 @@ class FilesystemStorage(Storage):
                 try:
                     with self._lock(upload_id):
                         try:
-                            meta = UploadMeta.model_validate_json(
+                            record = UploadRecord.model_validate_json(
                                 meta_path.read_text()
                             )
                         except Exception as exc:
@@ -561,11 +561,11 @@ class FilesystemStorage(Storage):
                             ) from exc
                         results.append(UploadInfo(
                             upload_id=upload_id,
-                            length=meta.length,
-                            offset=meta.offset,
-                            metadata=meta.metadata,
-                            last_write=meta.last_write,
-                            created_at=meta.created_at,
+                            length=record.length,
+                            offset=record.offset,
+                            metadata=record.metadata,
+                            last_write=record.last_write,
+                            created_at=record.created_at,
                         ))
                 except UploadNotFoundException:
                     continue

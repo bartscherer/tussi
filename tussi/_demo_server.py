@@ -64,7 +64,7 @@ async def _file_worker(tus: TUSApp, dest: Path, worker_id: int = 0) -> None:
     while True:
         try:
             async with tus.wait_for_file(timeout=3600) as upload:
-                raw = upload.meta.get('filename', upload.name)
+                raw = upload.record.metadata.get('filename', upload.name)
                 filename = Path(raw).name or upload.name
                 dest_path = _unique_path(dest / filename)
                 _log.info('worker %d claimed %s', worker_id, upload.name)
@@ -79,7 +79,7 @@ async def _file_worker(tus: TUSApp, dest: Path, worker_id: int = 0) -> None:
                         worker_id, dest_path.name,
                     )
                 upload.save(dest_path)
-                upload.save_meta(
+                upload.save_record(
                     dest_path.parent / f'{dest_path.name}.meta'
                 )
                 _log.info('worker %d saved [dest=%s]', worker_id, dest_path)

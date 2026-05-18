@@ -18,7 +18,7 @@ from .janitor import Janitor
 from .models import (
     CompletedUpload,
     UploadInfo,
-    UploadMeta
+    UploadRecord
 )
 from .storage import (
     FilesystemStorage,
@@ -46,7 +46,7 @@ __all__ = [
     'UploadCreatedEvent',
     'UploadFailedEvent',
     'UploadInfo',
-    'UploadMeta',
+    'UploadRecord',
     'UploadNotFoundException',
     'UploadProgressEvent',
     'UploadSizeExceededException'

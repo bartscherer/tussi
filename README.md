@@ -27,8 +27,9 @@ Core dependencies (`anyio`, `pydantic`, `starlette`) are installed automatically
 from pathlib import Path
 from tussi import TUSApp, FilesystemStorage
 
+storage = FilesystemStorage(directory=Path('./uploads'))
 tus = TUSApp(
-    storage=FilesystemStorage(directory=Path('./uploads')),
+    storage=storage,
     completed_dir=Path('./completed'),
 )
 ```
@@ -49,10 +50,8 @@ from fastapi import FastAPI, Request
 from starlette.responses import Response
 from tussi import TUSApp, FilesystemStorage
 
-tus = TUSApp(
-    storage=FilesystemStorage(directory=Path('./uploads')),
-    completed_dir=Path('./completed'),
-)
+storage = FilesystemStorage(directory=Path('./uploads'))
+tus = TUSApp(storage=storage, completed_dir=Path('./completed'))
 app = FastAPI()
 
 @app.api_route(
@@ -75,30 +74,49 @@ call from multiple concurrent workers, because each worker claims exactly one fi
 ```python
 # tus = TUSApp(...) - from "Quick start" above
 async with tus.wait_for_file(timeout=3600) as upload:
-    filename = upload.meta.get('filename', upload.name)
+    filename = upload.record.metadata.get('filename', upload.name)
     upload.save(Path('./dest') / filename)
-    upload.save_meta(Path('./dest') / f'{filename}.meta')
+    upload.save_record(Path('./dest') / f'{filename}.meta')
+```
+
+- `upload.save(dest)` moves the upload file to `dest`
+- `upload.save_record(dest)` moves the `.meta` sidecar file to `dest`; call this if you want to keep the record (fields like `finished_at`, `duration`, `metadata`) alongside the file
+- Both raise `RuntimeError` if called more than once
+- On context manager exit both files are deleted from `completed_dir`, regardless of whether `save`/`save_record` were called
+
+To read back a saved record later:
+
+```python
+from tussi import UploadRecord
+
+record = UploadRecord.from_file(Path('./dest') / f'{filename}.meta')
+print(record.duration, record.metadata)
 ```
 
 Raises `TimeoutError` if no upload is available within `timeout` seconds.
 
-## Metadata
+## UploadRecord
 
-Clients pass metadata via the `Upload-Metadata` header as a comma-separated list of
-`key base64(value)` pairs per the TUS spec. Tussi decodes this into a `dict[str, str]`
-available as `upload.meta` inside `wait_for_file`.
+`upload.record` inside `wait_for_file` is an `UploadRecord` with these fields:
 
-Constraints:
+| Field | Type | Description |
+|---|---|---|
+| `metadata` | `dict[str, str]` | Key-value pairs decoded from the `Upload-Metadata` header |
+| `length` | `int \| None` | Declared upload size in bytes |
+| `offset` | `int` | Bytes received |
+| `created_at` | `float` | Unix timestamp of upload creation |
+| `last_write` | `float` | Unix timestamp of last successful write |
+| `finished_at` | `datetime \| None` | UTC timestamp set when finalized |
+| `duration` | `timedelta \| None` | Time from creation to finalization |
+
+Metadata constraints:
 
 - Keys must match `[a-zA-Z0-9_-]+` (one or more characters). Pairs with invalid keys are silently ignored
 - The total header size is limited by `max_metadata_size` (default `4096` bytes)
 - The `filename` key, if present, must contain only printable ASCII (`0x20-0x7E`),
   otherwise the upload is rejected with `400 Bad Request`
 
-How you use the metadata afterwards is up to your application. The snippet above uses
-`filename` as the destination filename.
-
-Tussi never uses `filename` for storage. Uploads are always stored under a UUID. Therefore path traversal via metadata is not possible.
+Tussi never uses `filename` for storage. Uploads are always stored under a UUID. Path traversal via metadata is not possible.
 
 ## Event hooks
 
@@ -112,7 +130,7 @@ async def on_event(event: TUSEvent) -> None:
         print(f'upload complete: {event.upload_info.upload_id}')
 
 tus = TUSApp(
-    storage=FilesystemStorage(directory=Path('./uploads')),
+    storage=storage,
     completed_dir=Path('./completed'),
     on_event=on_event,
 )
@@ -120,6 +138,78 @@ tus = TUSApp(
 
 Available events: `UploadCreatedEvent`, `UploadProgressEvent`,
 `UploadCompletedEvent`, `UploadFailedEvent`.
+
+## Janitor
+
+`Janitor` cleans up stale and stuck uploads. Call `janitor.run()` periodically, e.g. from a background worker.
+
+```python
+from tussi import Janitor
+
+# storage and completed_dir are the same instances passed to TUSApp
+janitor = Janitor(
+    storage=storage,
+    completed_dir=Path('./completed'),
+)
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `storage` | required | Same `Storage` instance as `TUSApp` |
+| `completed_dir` | required | Same `completed_dir` as `TUSApp` |
+| `stale_upload_age` | `86400` | Delete incomplete uploads with no write activity for this many seconds |
+| `completed_file_age` | `604800` | Delete finalized files from `completed_dir` older than this many seconds |
+
+Each `run()` handles four cleanup cases:
+
+| Case | Trigger | Action |
+|---|---|---|
+| Finalize zombie | `offset == length` but `finalize` never ran | Delete from storage |
+| Stale upload | No write for `stale_upload_age` seconds | Delete from storage |
+| Orphaned meta | `.meta` in staging with no upload data | Remove `.meta` file |
+| Old completed file | File in `completed_dir` older than `completed_file_age` | Delete file and `.meta` |
+
+FastAPI lifespan example with file worker and periodic cleanup:
+
+```python
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+from fastapi import FastAPI
+from tussi import TUSApp, FilesystemStorage, Janitor
+
+log = logging.getLogger(__name__)
+
+storage = FilesystemStorage(directory=Path('./uploads'))
+tus = TUSApp(storage=storage, completed_dir=Path('./completed'))
+janitor = Janitor(storage=storage, completed_dir=Path('./completed'))
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async def file_worker():
+        while True:
+            try:
+                async with tus.wait_for_file(timeout=3600) as upload:
+                    filename = upload.record.metadata.get('filename', upload.name)
+                    upload.save(Path('./dest') / filename)
+            except TimeoutError:
+                pass
+            except Exception:
+                log.exception('file worker error')
+
+    async def cleanup_worker():
+        while True:
+            await asyncio.sleep(3600)
+            await janitor.run()
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(file_worker())
+        tg.create_task(cleanup_worker())
+        yield
+
+app = FastAPI(lifespan=lifespan)
+```
 
 ## Security
 
@@ -143,14 +233,16 @@ Other considerations:
 
 ## Configuration
 
-| Parameter | Default | Description | Type
+### `TUSApp`
+
+| Parameter | Default | Description | Type |
 |---|---|---|---|
-| `storage` | required | `Storage` instance (e.g. `FilesystemStorage`) | `tussi.storage.Storage`
-| `completed_dir` | required | Directory for finalized uploads | `pathlib.Path \| str`
-| `on_event` | `None` | Async callback for lifecycle events | `Callable[[TUSEvent], Awaitable[None]] \| None`
-| `max_size` | `None` | Max upload size in bytes | `int \| None`
-| `max_chunk_size` | `10485760` | Max PATCH body size in bytes | `int \| None`
-| `max_metadata_size` | `4096` | Max `Upload-Metadata` header size in bytes | `int`
+| `storage` | required | `Storage` instance (e.g. `FilesystemStorage`) | `tussi.storage.Storage` |
+| `completed_dir` | required | Directory for finalized uploads | `pathlib.Path \| str` |
+| `on_event` | `None` | Async callback for lifecycle events | `Callable[[TUSEvent], Awaitable[None]] \| None` |
+| `max_size` | `None` | Max upload size in bytes | `int \| None` |
+| `max_chunk_size` | `10485760` | Max PATCH body size in bytes | `int \| None` |
+| `max_metadata_size` | `4096` | Max `Upload-Metadata` header size in bytes | `int` |
 
 ### `FilesystemStorage`
 
@@ -160,16 +252,25 @@ Other considerations:
 | `directory_mode` | `0o755` | Mode for directory creation | `int` |
 | `fsync` | `True` | `fsync` data to disk before updating offset in meta file. Disable for higher throughput at the cost of durability | `bool` |
 
+### `Janitor`
+
+| Parameter | Default | Description | Type |
+|---|---|---|---|
+| `storage` | required | Same `Storage` instance as `TUSApp` | `tussi.storage.Storage` |
+| `completed_dir` | required | Same `completed_dir` as `TUSApp` | `pathlib.Path` |
+| `stale_upload_age` | `86400` | Seconds of inactivity before an incomplete upload is deleted | `float` |
+| `completed_file_age` | `604800` | Seconds before a finalized file is deleted from `completed_dir` | `float` |
+
 ## Storage layout
 
 ```
 uploads/          # Storage directory for in-progress uploads
   {uuid}          # pre-allocated buffer file (posix_fallocate)
-  {uuid}.meta     # upload metadata (JSON)
+  {uuid}.meta     # upload record (JSON)
 
 completed/        # completed_dir for finalized uploads
   {uuid}          # completed file (moved atomically from uploads/)
-  {uuid}.meta     # upload metadata (JSON)
+  {uuid}.meta     # upload record with finished_at and duration (JSON)
 ```
 
 ## Demo server
@@ -210,8 +311,8 @@ Implements TUS 1.0.0 core + `creation` extension.
 ```bash
 # 1. bump version in pyproject.toml
 # 2. commit and tag
-git commit -am 'bump version to 0.x.y'
-git tag v0.x.y
+git commit -am 'release: x.y.z'
+git tag vx.y.z
 git push && git push --tags
 # CI runs tests, builds, and publishes to PyPI automatically
 ```
