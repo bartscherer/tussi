@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from pathlib import Path
 from shutil import move
 
@@ -13,6 +14,8 @@ class UploadRecord(BaseModel):
     metadata: dict[str, str]
     last_write: float
     created_at: float
+    finished_at: datetime | None = None
+    duration: timedelta | None = None
 
 
 class UploadInfo(BaseModel):

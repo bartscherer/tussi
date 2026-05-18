@@ -3,6 +3,7 @@ from abc import (
     abstractmethod
 )
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from tempfile import NamedTemporaryFile
 from fcntl import (
     flock,
@@ -503,23 +504,19 @@ class FilesystemStorage(Storage):
 
         def _do_finalize() -> None:
             with self._lock(upload_id, exclusive=True):
-                tmp_meta: Path | None = None
                 try:
-                    with NamedTemporaryFile(
-                        mode='w',
-                        dir=dest.parent,
-                        suffix='.meta',
-                        delete=False,
-                    ) as tf:
-                        tmp_meta = Path(tf.name)
-                        tf.write(meta_path.read_text())
-                    tmp_meta.rename(dest_meta)
+                    record = UploadRecord.model_validate_json(
+                        meta_path.read_text()
+                    )
                 except Exception as exc:
-                    if tmp_meta is not None:
-                        tmp_meta.unlink(missing_ok=True)
                     raise StorageException(
-                        f'Failed to copy meta file to "{dest_meta}"'
+                        f'Failed to read meta file "{meta_path}"'
                     ) from exc
+                record.finished_at = datetime.now(timezone.utc)
+                record.duration = record.finished_at - datetime.fromtimestamp(
+                    record.created_at, tz=timezone.utc
+                )
+                self._write_record(dest_meta, record)
                 try:
                     upload_path.rename(dest)
                 except Exception as exc:
