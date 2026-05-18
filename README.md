@@ -75,7 +75,7 @@ call from multiple concurrent workers, because each worker claims exactly one fi
 ```python
 # tus = TUSApp(...) - from "Quick start" above
 async with tus.wait_for_file(timeout=3600) as upload:
-    filename = upload.info.metadata.get('filename', upload.name)
+    filename = upload.record.metadata.get('filename', upload.name)
     upload.save(Path('./dest') / filename)
     upload.save_meta(Path('./dest') / f'{filename}.meta')
 ```
@@ -84,7 +84,7 @@ Raises `TimeoutError` if no upload is available within `timeout` seconds.
 
 ## UploadRecord
 
-`upload.info` inside `wait_for_file` is an `UploadRecord` with these fields:
+`upload.record` inside `wait_for_file` is an `UploadRecord` with these fields:
 
 | Field | Type | Description |
 |---|---|---|
@@ -173,7 +173,7 @@ async def lifespan(app: FastAPI):
     async def file_worker():
         while True:
             async with tus.wait_for_file(timeout=3600) as upload:
-                filename = upload.info.metadata.get('filename', upload.name)
+                filename = upload.record.metadata.get('filename', upload.name)
                 upload.save(Path('./dest') / filename)
 
     async def cleanup_worker():

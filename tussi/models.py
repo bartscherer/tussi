@@ -43,7 +43,7 @@ class CompletedUpload:
     def __init__(self, path: Path, record: UploadRecord) -> None:
         self._path = path
         self._meta_path = path.parent / f'{path.name}.meta'
-        self.info = record
+        self.record = record
         self.name = path.name
         self._file_moved = False
         self._meta_moved = False
