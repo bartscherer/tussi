@@ -79,7 +79,7 @@ async def _file_worker(tus: TUSApp, dest: Path, worker_id: int = 0) -> None:
                         worker_id, dest_path.name,
                     )
                 upload.save(dest_path)
-                upload.save_meta(
+                upload.save_record(
                     dest_path.parent / f'{dest_path.name}.meta'
                 )
                 _log.info('worker %d saved [dest=%s]', worker_id, dest_path)

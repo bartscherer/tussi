@@ -17,6 +17,10 @@ class UploadRecord(BaseModel):
     finished_at: datetime | None = None
     duration: timedelta | None = None
 
+    @classmethod
+    def from_file(cls, path: Path) -> 'UploadRecord':
+        return cls.model_validate_json(path.read_text())
+
 
 class UploadInfo(BaseModel):
     '''
@@ -34,9 +38,9 @@ class CompletedUpload:
     '''
         Yielded by TUSApp.wait_for_file. Use as an async context manager.
         On exit both the upload file and its .meta are removed from
-        completed_dir regardless of whether save/save_meta were called.
+        completed_dir regardless of whether save/save_record were called.
 
-        save() and save_meta() each raise RuntimeError if called more than
+        save() and save_record() each raise RuntimeError if called more than
         once.
     '''
 
@@ -54,8 +58,8 @@ class CompletedUpload:
         move(str(self._path), dest)
         self._file_moved = True
 
-    def save_meta(self, dest: Path) -> None:
+    def save_record(self, dest: Path) -> None:
         if self._meta_moved:
-            raise RuntimeError('meta file already saved')
+            raise RuntimeError('record file already saved')
         move(str(self._meta_path), dest)
         self._meta_moved = True
