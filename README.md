@@ -82,23 +82,28 @@ async with tus.wait_for_file(timeout=3600) as upload:
 
 Raises `TimeoutError` if no upload is available within `timeout` seconds.
 
-## Metadata
+## UploadRecord
 
-Clients pass metadata via the `Upload-Metadata` header as a comma-separated list of
-`key base64(value)` pairs per the TUS spec. Tussi decodes this into a `dict[str, str]`
-available as `upload.info.metadata` inside `wait_for_file`.
+`upload.info` inside `wait_for_file` is an `UploadRecord` with these fields:
 
-Constraints:
+| Field | Type | Description |
+|---|---|---|
+| `metadata` | `dict[str, str]` | Key-value pairs decoded from the `Upload-Metadata` header |
+| `length` | `int \| None` | Declared upload size in bytes |
+| `offset` | `int` | Bytes received |
+| `created_at` | `float` | Unix timestamp of upload creation |
+| `last_write` | `float` | Unix timestamp of last successful write |
+| `finished_at` | `datetime \| None` | UTC timestamp set when finalized |
+| `duration` | `timedelta \| None` | Time from creation to finalization |
+
+Metadata constraints:
 
 - Keys must match `[a-zA-Z0-9_-]+` (one or more characters). Pairs with invalid keys are silently ignored
 - The total header size is limited by `max_metadata_size` (default `4096` bytes)
 - The `filename` key, if present, must contain only printable ASCII (`0x20-0x7E`),
   otherwise the upload is rejected with `400 Bad Request`
 
-How you use the metadata afterwards is up to your application. The snippet above uses
-`filename` as the destination filename.
-
-Tussi never uses `filename` for storage. Uploads are always stored under a UUID. Therefore path traversal via metadata is not possible.
+Tussi never uses `filename` for storage. Uploads are always stored under a UUID. Path traversal via metadata is not possible.
 
 ## Event hooks
 
@@ -120,6 +125,69 @@ tus = TUSApp(
 
 Available events: `UploadCreatedEvent`, `UploadProgressEvent`,
 `UploadCompletedEvent`, `UploadFailedEvent`.
+
+## Janitor
+
+`Janitor` cleans up stale and stuck uploads. Call `janitor.run()` periodically, e.g. from a background worker.
+
+```python
+from tussi import Janitor
+
+janitor = Janitor(
+    storage=storage,
+    completed_dir=Path('./completed'),
+)
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `storage` | required | Same `Storage` instance as `TUSApp` |
+| `completed_dir` | required | Same `completed_dir` as `TUSApp` |
+| `stale_upload_age` | `86400` | Delete incomplete uploads with no write activity for this many seconds |
+| `completed_file_age` | `604800` | Delete finalized files from `completed_dir` older than this many seconds |
+
+Each `run()` handles four cleanup cases:
+
+| Case | Trigger | Action |
+|---|---|---|
+| Finalize zombie | `offset == length` but `finalize` never ran | Delete from storage |
+| Stale upload | No write for `stale_upload_age` seconds | Delete from storage |
+| Orphaned meta | `.meta` in staging with no upload data | Remove `.meta` file |
+| Old completed file | File in `completed_dir` older than `completed_file_age` | Delete file and `.meta` |
+
+FastAPI lifespan example with file worker and periodic cleanup:
+
+```python
+import asyncio
+from contextlib import asynccontextmanager
+from pathlib import Path
+from fastapi import FastAPI
+from tussi import TUSApp, FilesystemStorage, Janitor
+
+storage = FilesystemStorage(directory=Path('./uploads'))
+tus = TUSApp(storage=storage, completed_dir=Path('./completed'))
+janitor = Janitor(storage=storage, completed_dir=Path('./completed'))
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async def file_worker():
+        while True:
+            async with tus.wait_for_file(timeout=3600) as upload:
+                filename = upload.info.metadata.get('filename', upload.name)
+                upload.save(Path('./dest') / filename)
+
+    async def cleanup_worker():
+        while True:
+            await asyncio.sleep(3600)
+            await janitor.run()
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(file_worker())
+        tg.create_task(cleanup_worker())
+        yield
+
+app = FastAPI(lifespan=lifespan)
+```
 
 ## Security
 
