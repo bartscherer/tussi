@@ -76,13 +76,22 @@ call from multiple concurrent workers, because each worker claims exactly one fi
 async with tus.wait_for_file(timeout=3600) as upload:
     filename = upload.record.metadata.get('filename', upload.name)
     upload.save(Path('./dest') / filename)
-    upload.save_meta(Path('./dest') / f'{filename}.meta')
+    upload.save_record(Path('./dest') / f'{filename}.meta')
 ```
 
-- `upload.save(dest)` — moves the upload file to `dest`
-- `upload.save_meta(dest)` — moves the `.meta` sidecar file to `dest`; call this if you want to keep the record (fields like `finished_at`, `duration`, `metadata`) alongside the file
+- `upload.save(dest)` moves the upload file to `dest`
+- `upload.save_record(dest)` moves the `.meta` sidecar file to `dest`; call this if you want to keep the record (fields like `finished_at`, `duration`, `metadata`) alongside the file
 - Both raise `RuntimeError` if called more than once
-- On context manager exit both files are deleted from `completed_dir`, regardless of whether `save`/`save_meta` were called
+- On context manager exit both files are deleted from `completed_dir`, regardless of whether `save`/`save_record` were called
+
+To read back a saved record later:
+
+```python
+from tussi import UploadRecord
+
+record = UploadRecord.from_file(Path('./dest') / f'{filename}.meta')
+print(record.duration, record.metadata)
+```
 
 Raises `TimeoutError` if no upload is available within `timeout` seconds.
 
