@@ -27,8 +27,9 @@ Core dependencies (`anyio`, `pydantic`, `starlette`) are installed automatically
 from pathlib import Path
 from tussi import TUSApp, FilesystemStorage
 
+storage = FilesystemStorage(directory=Path('./uploads'))
 tus = TUSApp(
-    storage=FilesystemStorage(directory=Path('./uploads')),
+    storage=storage,
     completed_dir=Path('./completed'),
 )
 ```
@@ -49,10 +50,8 @@ from fastapi import FastAPI, Request
 from starlette.responses import Response
 from tussi import TUSApp, FilesystemStorage
 
-tus = TUSApp(
-    storage=FilesystemStorage(directory=Path('./uploads')),
-    completed_dir=Path('./completed'),
-)
+storage = FilesystemStorage(directory=Path('./uploads'))
+tus = TUSApp(storage=storage, completed_dir=Path('./completed'))
 app = FastAPI()
 
 @app.api_route(
@@ -79,6 +78,11 @@ async with tus.wait_for_file(timeout=3600) as upload:
     upload.save(Path('./dest') / filename)
     upload.save_meta(Path('./dest') / f'{filename}.meta')
 ```
+
+- `upload.save(dest)` — moves the upload file to `dest`
+- `upload.save_meta(dest)` — moves the `.meta` sidecar file to `dest`; call this if you want to keep the record (fields like `finished_at`, `duration`, `metadata`) alongside the file
+- Both raise `RuntimeError` if called more than once
+- On context manager exit both files are deleted from `completed_dir`, regardless of whether `save`/`save_meta` were called
 
 Raises `TimeoutError` if no upload is available within `timeout` seconds.
 
@@ -117,7 +121,7 @@ async def on_event(event: TUSEvent) -> None:
         print(f'upload complete: {event.upload_info.upload_id}')
 
 tus = TUSApp(
-    storage=FilesystemStorage(directory=Path('./uploads')),
+    storage=storage,
     completed_dir=Path('./completed'),
     on_event=on_event,
 )
@@ -133,6 +137,7 @@ Available events: `UploadCreatedEvent`, `UploadProgressEvent`,
 ```python
 from tussi import Janitor
 
+# storage and completed_dir are the same instances passed to TUSApp
 janitor = Janitor(
     storage=storage,
     completed_dir=Path('./completed'),
@@ -159,10 +164,13 @@ FastAPI lifespan example with file worker and periodic cleanup:
 
 ```python
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from tussi import TUSApp, FilesystemStorage, Janitor
+
+log = logging.getLogger(__name__)
 
 storage = FilesystemStorage(directory=Path('./uploads'))
 tus = TUSApp(storage=storage, completed_dir=Path('./completed'))
@@ -172,9 +180,14 @@ janitor = Janitor(storage=storage, completed_dir=Path('./completed'))
 async def lifespan(app: FastAPI):
     async def file_worker():
         while True:
-            async with tus.wait_for_file(timeout=3600) as upload:
-                filename = upload.record.metadata.get('filename', upload.name)
-                upload.save(Path('./dest') / filename)
+            try:
+                async with tus.wait_for_file(timeout=3600) as upload:
+                    filename = upload.record.metadata.get('filename', upload.name)
+                    upload.save(Path('./dest') / filename)
+            except TimeoutError:
+                pass
+            except Exception:
+                log.exception('file worker error')
 
     async def cleanup_worker():
         while True:
@@ -211,14 +224,16 @@ Other considerations:
 
 ## Configuration
 
-| Parameter | Default | Description | Type
+### `TUSApp`
+
+| Parameter | Default | Description | Type |
 |---|---|---|---|
-| `storage` | required | `Storage` instance (e.g. `FilesystemStorage`) | `tussi.storage.Storage`
-| `completed_dir` | required | Directory for finalized uploads | `pathlib.Path \| str`
-| `on_event` | `None` | Async callback for lifecycle events | `Callable[[TUSEvent], Awaitable[None]] \| None`
-| `max_size` | `None` | Max upload size in bytes | `int \| None`
-| `max_chunk_size` | `10485760` | Max PATCH body size in bytes | `int \| None`
-| `max_metadata_size` | `4096` | Max `Upload-Metadata` header size in bytes | `int`
+| `storage` | required | `Storage` instance (e.g. `FilesystemStorage`) | `tussi.storage.Storage` |
+| `completed_dir` | required | Directory for finalized uploads | `pathlib.Path \| str` |
+| `on_event` | `None` | Async callback for lifecycle events | `Callable[[TUSEvent], Awaitable[None]] \| None` |
+| `max_size` | `None` | Max upload size in bytes | `int \| None` |
+| `max_chunk_size` | `10485760` | Max PATCH body size in bytes | `int \| None` |
+| `max_metadata_size` | `4096` | Max `Upload-Metadata` header size in bytes | `int` |
 
 ### `FilesystemStorage`
 
@@ -228,16 +243,25 @@ Other considerations:
 | `directory_mode` | `0o755` | Mode for directory creation | `int` |
 | `fsync` | `True` | `fsync` data to disk before updating offset in meta file. Disable for higher throughput at the cost of durability | `bool` |
 
+### `Janitor`
+
+| Parameter | Default | Description | Type |
+|---|---|---|---|
+| `storage` | required | Same `Storage` instance as `TUSApp` | `tussi.storage.Storage` |
+| `completed_dir` | required | Same `completed_dir` as `TUSApp` | `pathlib.Path` |
+| `stale_upload_age` | `86400` | Seconds of inactivity before an incomplete upload is deleted | `float` |
+| `completed_file_age` | `604800` | Seconds before a finalized file is deleted from `completed_dir` | `float` |
+
 ## Storage layout
 
 ```
 uploads/          # Storage directory for in-progress uploads
   {uuid}          # pre-allocated buffer file (posix_fallocate)
-  {uuid}.meta     # upload metadata (JSON)
+  {uuid}.meta     # upload record (JSON)
 
 completed/        # completed_dir for finalized uploads
   {uuid}          # completed file (moved atomically from uploads/)
-  {uuid}.meta     # upload metadata (JSON)
+  {uuid}.meta     # upload record with finished_at and duration (JSON)
 ```
 
 ## Demo server
@@ -278,8 +302,8 @@ Implements TUS 1.0.0 core + `creation` extension.
 ```bash
 # 1. bump version in pyproject.toml
 # 2. commit and tag
-git commit -am 'bump version to 0.x.y'
-git tag v0.x.y
+git commit -am 'release: x.y.z'
+git tag vx.y.z
 git push && git push --tags
 # CI runs tests, builds, and publishes to PyPI automatically
 ```
