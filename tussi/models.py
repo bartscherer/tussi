@@ -12,6 +12,7 @@ class UploadRecord(BaseModel):
     length: int | None
     offset: int = 0
     metadata: dict[str, str]
+    server_metadata: dict[str, str] = {}
     last_write: float
     created_at: float
     finished_at: datetime | None = None

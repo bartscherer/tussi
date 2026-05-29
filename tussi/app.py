@@ -79,6 +79,10 @@ class TUSApp:
         on_event: Callable[
             [TUSEvent], Awaitable[None]
         ] | None = None,
+        on_create: Callable[
+            [dict[str, str], dict[str, str]],
+            Awaitable[dict[str, str]]
+        ] | None = None,
         max_size: int | None = None,
         max_chunk_size: int | None = TUS_DEFAULT_MAX_CHUNK_SIZE,
         max_metadata_size: int = TUS_MAX_RAW_METADATA_SIZE
@@ -105,6 +109,7 @@ class TUSApp:
             ) from exc
         self._completed_dir = completed_dir
         self._on_event = on_event
+        self._on_create = on_create
         self._max_metadata_size = max_metadata_size
         self._methods_to_callbacks: dict[
             HTTPMethod,
@@ -430,6 +435,7 @@ class TUSApp:
         self,
         upload_length: int,
         metadata: dict[str, str],
+        server_metadata: dict[str, str],
         response: Response,
     ) -> str | Response:
         try:
@@ -462,6 +468,7 @@ class TUSApp:
                     upload_id=upload_id,
                     length=upload_length,
                     metadata=metadata,
+                    server_metadata=server_metadata,
                 )
                 return upload_id
             except UploadAlreadyExistsException:
@@ -497,7 +504,20 @@ class TUSApp:
             return validated
         upload_length, metadata = validated
 
-        result = await self._create_upload(upload_length, metadata, response)
+        if self._on_create is not None:
+            server_metadata = await self._on_create(
+                dict(request.headers),
+                metadata,
+            )
+        else:
+            server_metadata = {}
+
+        result = await self._create_upload(
+            upload_length,
+            metadata,
+            server_metadata,
+            response,
+        )
         if isinstance(result, Response):
             return result
         upload_id = result
