@@ -405,6 +405,71 @@ class TestMaxChunkSize:
         assert resp.status_code == http_status.HTTP_413_CONTENT_TOO_LARGE
 
 
+class TestOnCreate:
+    @pytest.fixture
+    def _captured(self) -> dict:
+        return {}
+
+    @pytest.fixture
+    def _app_with_hook(self, tmp_path, _captured):
+        async def on_create(
+            headers: dict[str, str],
+            metadata: dict[str, str],
+        ) -> dict[str, str]:
+            _captured['headers'] = headers
+            _captured['metadata'] = metadata
+            return {'uploaded_by': 'test-user'}
+        return TUSApp(
+            storage=FilesystemStorage(directory=tmp_path / 'uploads'),
+            completed_dir=tmp_path / 'completed',
+            on_create=on_create,
+        )
+
+    @pytest.fixture
+    async def _hc(self, _app_with_hook):
+        async with AsyncClient(
+            transport=ASGITransport(app=_app_with_hook),
+            base_url='http://test',
+        ) as c:
+            yield c
+
+    async def test_hook_called_on_post(self, _hc, _captured):
+        await create(_hc, 64)
+        assert 'headers' in _captured
+
+    async def test_hook_receives_request_headers(self, _hc, _captured):
+        await create(_hc, 64)
+        assert _captured['headers'].get('tus-resumable') == '1.0.0'
+
+    async def test_hook_receives_client_metadata(self, _hc, _captured):
+        await create(_hc, 64, metadata={'filename': 'data.bin'})
+        assert _captured['metadata'].get('filename') == 'data.bin'
+
+    async def test_server_metadata_persisted_in_record(
+        self,
+        _app_with_hook,
+        _hc,
+    ):
+        await _complete_upload(_hc, b'x' * 64)
+        async with _app_with_hook.wait_for_file(timeout=5) as upload:
+            assert upload.record.server_metadata.get('uploaded_by') == 'test-user'  # noqa: E501
+
+    async def test_client_metadata_not_in_server_metadata(
+        self,
+        _app_with_hook,
+        _hc,
+    ):
+        await _complete_upload(_hc, b'x' * 64, metadata={'filename': 'f.txt'})
+        async with _app_with_hook.wait_for_file(timeout=5) as upload:
+            assert upload.record.metadata.get('filename') == 'f.txt'
+            assert 'filename' not in upload.record.server_metadata
+
+    async def test_no_hook_yields_empty_server_metadata(self, _app, _client):
+        await _complete_upload(_client, b'x' * 64)
+        async with _app.wait_for_file(timeout=5) as upload:
+            assert upload.record.server_metadata == {}
+
+
 class TestMetadataValidation:
     async def test_400_when_metadata_exceeds_max_size(self, tmp_path):
         long_value = b64encode(b'this-is-way-too-long').decode()
