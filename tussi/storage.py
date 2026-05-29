@@ -100,6 +100,7 @@ class Storage(ABC):
         upload_id: str,
         length: int,
         metadata: dict[str, str],
+        server_metadata: dict[str, str] | None = None,
     ) -> None:
         '''
             Initialize a new upload resource. Must allocate or reserve space
@@ -261,6 +262,7 @@ class FilesystemStorage(Storage):
         upload_id: str,
         length: int,
         metadata: dict[str, str],
+        server_metadata: dict[str, str] | None = None,
     ) -> None:
         available_free_space = await self.free_space()
         if available_free_space < length:
@@ -274,6 +276,7 @@ class FilesystemStorage(Storage):
         record = UploadRecord(
             length=length,
             metadata=metadata,
+            server_metadata=server_metadata or {},
             last_write=now,
             created_at=now
         )
@@ -526,10 +529,12 @@ class FilesystemStorage(Storage):
                     ) from exc
                 try:
                     meta_path.unlink(missing_ok=True)
-                except Exception as exc:
-                    raise StorageException(
-                        f'Failed to remove meta file "{meta_path}"'
-                    ) from exc
+                except Exception:  # pylint: disable=broad-exception-caught
+                    _log.warning(
+                        'failed to remove stale meta file [path=%s]',
+                        meta_path,
+                        exc_info=True,
+                    )
 
         try:
             await to_thread.run_sync(_do_finalize)
