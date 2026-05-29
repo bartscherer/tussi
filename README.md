@@ -102,6 +102,7 @@ Raises `TimeoutError` if no upload is available within `timeout` seconds.
 | Field | Type | Description |
 |---|---|---|
 | `metadata` | `dict[str, str]` | Key-value pairs decoded from the `Upload-Metadata` header |
+| `server_metadata` | `dict[str, str]` | Key-value pairs returned by the `on_create` hook (empty if no hook) |
 | `length` | `int \| None` | Declared upload size in bytes |
 | `offset` | `int` | Bytes received |
 | `created_at` | `float` | Unix timestamp of upload creation |
@@ -138,6 +139,38 @@ tus = TUSApp(
 
 Available events: `UploadCreatedEvent`, `UploadProgressEvent`,
 `UploadCompletedEvent`, `UploadFailedEvent`.
+
+## Server-side metadata
+
+Pass `on_create` to inject server-controlled metadata at upload creation time.
+The hook is called on every POST before the record is persisted. It receives
+the request headers and the client-provided metadata, and returns a dict that
+is stored separately as `server_metadata` on the record. The client metadata
+is never modified.
+
+```python
+async def on_create(
+    headers: dict[str, str],   # lowercase header names, decoded values
+    metadata: dict[str, str],  # client-provided Upload-Metadata (already decoded)
+) -> dict[str, str]:           # stored as record.server_metadata
+    token = headers.get('authorization', '').removeprefix('Bearer ')
+    user_id = await resolve_user(token)
+    return {'uploaded_by': str(user_id)}
+
+tus = TUSApp(
+    storage=storage,
+    completed_dir=Path('./completed'),
+    on_create=on_create,
+)
+```
+
+After the upload completes:
+
+```python
+async with tus.wait_for_file(timeout=3600) as upload:
+    user = upload.record.server_metadata.get('uploaded_by')
+    client_filename = upload.record.metadata.get('filename')
+```
 
 ## Janitor
 
@@ -240,6 +273,7 @@ Other considerations:
 | `storage` | required | `Storage` instance (e.g. `FilesystemStorage`) | `tussi.storage.Storage` |
 | `completed_dir` | required | Directory for finalized uploads | `pathlib.Path \| str` |
 | `on_event` | `None` | Async callback for lifecycle events | `Callable[[TUSEvent], Awaitable[None]] \| None` |
+| `on_create` | `None` | Async hook called on upload creation receiving request headers and client metadata, returns `server_metadata` to persist | `Callable[[dict[str, str], dict[str, str]], Awaitable[dict[str, str]]] \| None` |
 | `max_size` | `None` | Max upload size in bytes | `int \| None` |
 | `max_chunk_size` | `10485760` | Max PATCH body size in bytes | `int \| None` |
 | `max_metadata_size` | `4096` | Max `Upload-Metadata` header size in bytes | `int` |
