@@ -264,6 +264,41 @@ Other considerations:
 - Uploads are stored under UUIDs, never under the client-supplied `filename`. Path traversal via metadata is not possible
 - The uploads and completed directories should not be served as static files
 
+## Behind a reverse proxy
+
+When tussi runs behind a reverse proxy (nginx, Caddy, Traefik, etc.), the `Location` header in `201 Created` responses must reflect the public URL, not
+the internal one. Pass `trusted_proxies` to enable this:
+
+```python
+tus = TUSApp(
+    storage=storage,
+    completed_dir=Path('./completed'),
+    trusted_proxies=['127.0.0.1', '10.0.0.0/8'],
+)
+```
+
+Each entry is an IP address or CIDR range. When the connecting client's IP
+matches, tussi reads `X-Forwarded-Proto` to determine the scheme for the
+`Location` header. Without `trusted_proxies`, `X-Forwarded-Proto` is always
+ignored. A client cannot spoof the scheme by sending the header directly.
+
+**nginx example**
+
+```nginx
+location /files/ {
+    proxy_pass         http://127.0.0.1:8000;
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+}
+```
+
+`proxy_set_header Host $host` is required so the `Location` hostname matches
+the public domain. `X-Forwarded-Proto` is only honoured when the proxy IP is
+listed in `trusted_proxies`.
+
+Only `X-Forwarded-Proto` is used. `X-Forwarded-For` and `X-Forwarded-Host`
+are not read.
+
 ## Configuration
 
 ### `TUSApp`
@@ -277,6 +312,7 @@ Other considerations:
 | `max_size` | `None` | Max upload size in bytes | `int \| None` |
 | `max_chunk_size` | `10485760` | Max PATCH body size in bytes | `int \| None` |
 | `max_metadata_size` | `4096` | Max `Upload-Metadata` header size in bytes | `int` |
+| `trusted_proxies` | `None` | IPs or CIDR ranges whose `X-Forwarded-Proto` header is trusted for scheme resolution | `list[str] \| None` |
 
 ### `FilesystemStorage`
 
