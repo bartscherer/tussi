@@ -504,3 +504,162 @@ class TestMetadataValidation:
         raw = head.headers.get('Upload-Metadata', '')
         assert 'filename' in raw
         assert 'invalid key!!' not in raw
+
+
+class TestTrustedProxy:
+    def test_invalid_entry_raises_value_error(self, tmp_path):
+        with pytest.raises(ValueError):
+            TUSApp(
+                storage=FilesystemStorage(
+                    directory=tmp_path / 'uploads',
+                ),
+                completed_dir=tmp_path / 'completed',
+                trusted_proxies=['not-an-ip'],
+            )
+
+    def test_valid_single_ip_accepted(self, tmp_path):
+        TUSApp(
+            storage=FilesystemStorage(directory=tmp_path / 'uploads'),
+            completed_dir=tmp_path / 'completed',
+            trusted_proxies=['10.0.0.1'],
+        )
+
+    def test_valid_cidr_accepted(self, tmp_path):
+        TUSApp(
+            storage=FilesystemStorage(directory=tmp_path / 'uploads'),
+            completed_dir=tmp_path / 'completed',
+            trusted_proxies=['192.168.0.0/24'],
+        )
+
+    async def test_forwarded_proto_ignored_without_trusted_proxies(
+        self,
+        tmp_path,
+    ):
+        app = TUSApp(
+            storage=FilesystemStorage(directory=tmp_path / 'uploads'),
+            completed_dir=tmp_path / 'completed',
+        )
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=app,
+                client=('127.0.0.1', 12345),
+            ),
+            base_url='http://test',
+        ) as c:
+            resp = await c.post('/files/', headers={
+                **TUS,
+                'Upload-Length': '64',
+                'X-Forwarded-Proto': 'https',
+            })
+        assert resp.status_code == http_status.HTTP_201_CREATED
+        assert resp.headers['Location'].startswith('http://')
+
+    async def test_forwarded_proto_used_from_trusted_proxy(self, tmp_path):
+        app = TUSApp(
+            storage=FilesystemStorage(directory=tmp_path / 'uploads'),
+            completed_dir=tmp_path / 'completed',
+            trusted_proxies=['127.0.0.1'],
+        )
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=app,
+                client=('127.0.0.1', 12345),
+            ),
+            base_url='http://test',
+        ) as c:
+            resp = await c.post('/files/', headers={
+                **TUS,
+                'Upload-Length': '64',
+                'X-Forwarded-Proto': 'https',
+            })
+        assert resp.status_code == http_status.HTTP_201_CREATED
+        assert resp.headers['Location'].startswith('https://')
+
+    async def test_forwarded_proto_ignored_from_untrusted_client(
+        self,
+        tmp_path,
+    ):
+        app = TUSApp(
+            storage=FilesystemStorage(directory=tmp_path / 'uploads'),
+            completed_dir=tmp_path / 'completed',
+            trusted_proxies=['10.0.0.1'],
+        )
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=app,
+                client=('192.168.1.99', 12345),
+            ),
+            base_url='http://test',
+        ) as c:
+            resp = await c.post('/files/', headers={
+                **TUS,
+                'Upload-Length': '64',
+                'X-Forwarded-Proto': 'https',
+            })
+        assert resp.status_code == http_status.HTTP_201_CREATED
+        assert resp.headers['Location'].startswith('http://')
+
+    async def test_fallback_to_raw_scheme_without_forwarded_header(
+        self,
+        tmp_path,
+    ):
+        app = TUSApp(
+            storage=FilesystemStorage(directory=tmp_path / 'uploads'),
+            completed_dir=tmp_path / 'completed',
+            trusted_proxies=['127.0.0.1'],
+        )
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=app,
+                client=('127.0.0.1', 12345),
+            ),
+            base_url='http://test',
+        ) as c:
+            resp = await c.post('/files/', headers={
+                **TUS,
+                'Upload-Length': '64',
+            })
+        assert resp.status_code == http_status.HTTP_201_CREATED
+        assert resp.headers['Location'].startswith('http://')
+
+    async def test_first_forwarded_proto_value_used(self, tmp_path):
+        app = TUSApp(
+            storage=FilesystemStorage(directory=tmp_path / 'uploads'),
+            completed_dir=tmp_path / 'completed',
+            trusted_proxies=['127.0.0.1'],
+        )
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=app,
+                client=('127.0.0.1', 12345),
+            ),
+            base_url='http://test',
+        ) as c:
+            resp = await c.post('/files/', headers={
+                **TUS,
+                'Upload-Length': '64',
+                'X-Forwarded-Proto': 'https, http',
+            })
+        assert resp.status_code == http_status.HTTP_201_CREATED
+        assert resp.headers['Location'].startswith('https://')
+
+    async def test_cidr_range_trusted_proxy(self, tmp_path):
+        app = TUSApp(
+            storage=FilesystemStorage(directory=tmp_path / 'uploads'),
+            completed_dir=tmp_path / 'completed',
+            trusted_proxies=['10.0.0.0/8'],
+        )
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=app,
+                client=('10.1.2.3', 12345),
+            ),
+            base_url='http://test',
+        ) as c:
+            resp = await c.post('/files/', headers={
+                **TUS,
+                'Upload-Length': '64',
+                'X-Forwarded-Proto': 'https',
+            })
+        assert resp.status_code == http_status.HTTP_201_CREATED
+        assert resp.headers['Location'].startswith('https://')

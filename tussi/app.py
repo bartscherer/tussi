@@ -10,6 +10,7 @@ from fcntl import (
     LOCK_NB,
     LOCK_UN,
 )
+import ipaddress
 from logging import getLogger
 from http import HTTPMethod
 from pathlib import Path
@@ -18,11 +19,11 @@ from uuid import UUID, uuid4
 from typing import (
     BinaryIO,
     Final,
+    Union
 )
 
 from anyio import current_time, sleep, to_thread
 from starlette import status as http_status
-from starlette.datastructures import URL
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import (
@@ -85,10 +86,23 @@ class TUSApp:
         ] | None = None,
         max_size: int | None = None,
         max_chunk_size: int | None = TUS_DEFAULT_MAX_CHUNK_SIZE,
-        max_metadata_size: int = TUS_MAX_RAW_METADATA_SIZE
-    ) -> None:
+        max_metadata_size: int = TUS_MAX_RAW_METADATA_SIZE,
+        trusted_proxies: list[str] | None = None,
+    ) -> None:  # pylint: disable=too-many-instance-attributes
         self._max_size = max_size
         self._max_chunk_size = max_chunk_size
+        self._trusted_proxy_networks: list[
+            Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+        ] = []
+        for entry in (trusted_proxies or []):
+            try:
+                self._trusted_proxy_networks.append(
+                    ipaddress.ip_network(entry, strict=False)
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f'Invalid trusted_proxies entry "{entry}": {exc}'
+                ) from exc
         self._capabilities: dict[TUSHeader | CommonHeader, str] = {
             TUSHeader.TUS_EXTENSION: _TUS_SUPPORTED_EXTENSIONS,
             TUSHeader.TUS_RESUMABLE: _TUS_PROTOCOL_VERSION,
@@ -536,7 +550,7 @@ class TUSApp:
         )
         response.headers[CommonHeader.LOCATION] = (
             self._request_url_to_location_header(
-                url=request.url,
+                request=request,
                 upload_id=upload_id,
             )
         )
@@ -579,12 +593,43 @@ class TUSApp:
         except ValueError:
             return None
 
+    def _is_trusted_proxy(self, host: str) -> bool:
+        '''
+            Returns True if *host* matches any entry in trusted_proxies
+        '''
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return any(addr in net for net in self._trusted_proxy_networks)
+
+    def _resolve_scheme(self, request: Request) -> str:
+        '''
+            Returns the effective scheme for building Location headers.
+
+            Uses X-Forwarded-Proto only when the connecting client is in the
+            trusted_proxies list. Falls back to the raw request scheme so
+            that TUSApp works correctly without any proxy configuration.
+        '''
+        client = request.client
+        if (
+            client is not None
+            and self._trusted_proxy_networks
+            and self._is_trusted_proxy(client.host)
+        ):
+            forwarded = request.headers.get('x-forwarded-proto', '').strip()
+            if forwarded:
+                return forwarded.split(',')[0].strip().lower()
+        return request.url.scheme
+
     def _request_url_to_location_header(
         self,
-        url: URL,
+        request: Request,
         upload_id: str
     ) -> str:
-        return f'{url.scheme}://{url.netloc}{url.path.rstrip("/")}/{upload_id}'
+        scheme = self._resolve_scheme(request)
+        url = request.url
+        return f'{scheme}://{url.netloc}{url.path.rstrip("/")}/{upload_id}'
 
     def _set_header(
         self,
