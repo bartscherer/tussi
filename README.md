@@ -286,15 +286,28 @@ ignored. A client cannot spoof the scheme by sending the header directly.
 
 ```nginx
 location /files/ {
-    proxy_pass         http://127.0.0.1:8000;
-    proxy_set_header   Host              $host;
-    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_pass                 http://127.0.0.1:8000;
+    proxy_set_header           Host              $host;
+    proxy_set_header           X-Forwarded-Proto $scheme;
+    proxy_request_buffering    off;
+    client_max_body_size       11m;  # >= max_chunk_size (default 10 MB)
 }
 ```
 
 `proxy_set_header Host $host` is required so the `Location` hostname matches
 the public domain. `X-Forwarded-Proto` is only honoured when the proxy IP is
 listed in `trusted_proxies`.
+
+`proxy_request_buffering off` is important: without it nginx buffers the entire
+chunk body to disk before forwarding it, which doubles disk I/O and defeats
+streaming. `client_max_body_size` must be at least as large as `max_chunk_size`
+(default `10485760`, ~10 MB), otherwise nginx rejects the request before tussi
+sees it.
+
+Most TUS clients split uploads into chunks and need to know the server's chunk
+limit upfront. Either configure `max_chunk_size` in the client to match the
+server, or set `client_max_body_size` generously (e.g. `0` to disable the
+limit) and leave `max_chunk_size` at its default so tussi enforces it instead.
 
 Only `X-Forwarded-Proto` is used. `X-Forwarded-For` and `X-Forwarded-Host`
 are not read.
